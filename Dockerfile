@@ -1,30 +1,83 @@
+FROM alpine:3.7 as protoc_builder
+RUN apk add --no-cache build-base curl automake autoconf libtool git zlib-dev
+
+ENV GRPC_VERSION=1.13.0 \
+    GRPC_JAVA_VERSION=1.13.1 \
+    PROTOBUF_VERSION=3.6.0.1 \
+    PROTOBUF_C_VERSION=1.3.0 \
+    PROTOC_GEN_DOC_VERSION=1.1.0 \
+    OUTDIR=/out
+RUN mkdir -p /protobuf && \
+    curl -L https://github.com/google/protobuf/archive/v${PROTOBUF_VERSION}.tar.gz | tar xvz --strip-components=1 -C /protobuf
+RUN git clone --depth 1 --recursive -b v${GRPC_VERSION} https://github.com/grpc/grpc.git /grpc && \
+    rm -rf grpc/third_party/protobuf && \
+    ln -s /protobuf /grpc/third_party/protobuf
+RUN mkdir -p /grpc-java && \
+    curl -L https://github.com/grpc/grpc-java/archive/v${GRPC_JAVA_VERSION}.tar.gz | tar xvz --strip-components=1 -C /grpc-java
+RUN cd /protobuf && \
+    autoreconf -f -i -Wall,no-obsolete && \
+    ./configure --prefix=/usr --enable-static=no && \
+    make -j2 && make install
+RUN cd grpc && \
+    make -j2 plugins
+RUN cd /grpc-java/compiler/src/java_plugin/cpp && \
+    g++ \
+        -I. -I/protobuf/src \
+        *.cpp \
+        -L/protobuf/src/.libs \
+        -lprotoc -lprotobuf -lpthread --std=c++0x -s \
+        -o protoc-gen-grpc-java
+RUN cd /protobuf && \
+    make install DESTDIR=${OUTDIR}
+RUN cd /grpc && \
+    make install-plugins prefix=${OUTDIR}/usr
+RUN cd /grpc-java/compiler/src/java_plugin/cpp && \
+    install -c protoc-gen-grpc-java ${OUTDIR}/usr/bin/
+
+RUN apk add --no-cache go
+ENV GOPATH=/go \
+    PATH=/go/bin/:$PATH
+RUN go get -u -v -ldflags '-w -s' \
+        github.com/Masterminds/glide \
+        github.com/golang/protobuf/protoc-gen-go \
+        github.com/gogo/protobuf/protoc-gen-gofast \
+        github.com/gogo/protobuf/protoc-gen-gogo \
+        github.com/gogo/protobuf/protoc-gen-gogofast \
+        github.com/gogo/protobuf/protoc-gen-gogofaster \
+        github.com/gogo/protobuf/protoc-gen-gogoslick \
+        github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger \
+        github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway \
+        github.com/johanbrandhorst/protobuf/protoc-gen-gopherjs \
+        github.com/ckaznocha/protoc-gen-lint \
+        && install -c ${GOPATH}/bin/protoc-gen* ${OUTDIR}/usr/bin/
+
+RUN mkdir -p ${GOPATH}/src/github.com/pseudomuto/protoc-gen-doc && \
+    curl -L https://github.com/pseudomuto/protoc-gen-doc/archive/v${PROTOC_GEN_DOC_VERSION}.tar.gz | tar xvz --strip 1 -C ${GOPATH}/src/github.com/pseudomuto/protoc-gen-doc
+RUN cd ${GOPATH}/src/github.com/pseudomuto/protoc-gen-doc && \
+    make build && \
+    install -c ${GOPATH}/src/github.com/pseudomuto/protoc-gen-doc/protoc-gen-doc ${OUTDIR}/usr/bin/
+
+FROM znly/upx as packer
+COPY --from=protoc_builder /out/ /out/
+RUN upx --lzma \
+        /out/usr/bin/protoc \
+        /out/usr/bin/grpc_* \
+        /out/usr/bin/protoc-gen-*
+
 FROM mhart/alpine-node:latest
+RUN apk add --no-cache git make musl-dev go protobuf openssh libstdc++
+COPY --from=packer /out/ /
 
-RUN apk add --no-cache git make musl-dev go protobuf openssh
+RUN apk add --no-cache curl && \
+    mkdir -p /protobuf/google/protobuf && \
+        for f in any duration descriptor empty struct timestamp wrappers; do \
+            curl -L -o /protobuf/google/protobuf/${f}.proto https://raw.githubusercontent.com/google/protobuf/master/src/google/protobuf/${f}.proto; \
+        done && \
+    mkdir -p /protobuf/google/api && \
+        for f in annotations http; do \
+            curl -L -o /protobuf/google/api/${f}.proto https://raw.githubusercontent.com/grpc-ecosystem/grpc-gateway/master/third_party/googleapis/google/api/${f}.proto; \
+        done && \
+    mkdir -p /protobuf/github.com/gogo/protobuf/gogoproto && \
+        curl -L -o /protobuf/github.com/gogo/protobuf/gogoproto/gogo.proto https://raw.githubusercontent.com/gogo/protobuf/master/gogoproto/gogo.proto && \
+    apk del curl
 
-# Configure Go
-ENV GOROOT /usr/lib/go
-ENV GOPATH /go
-ENV PATH /go/bin:$PATH
-
-# install golang protoc plugin
-RUN go get -u github.com/gogo/protobuf/protoc-gen-gofast
-
-# install openjdk
-RUN { \
-		echo '#!/bin/sh'; \
-		echo 'set -e'; \
-		echo; \
-		echo 'dirname "$(dirname "$(readlink -f "$(which javac || which java)")")"'; \
-	} > /usr/local/bin/docker-java-home \
-	&& chmod +x /usr/local/bin/docker-java-home
-ENV JAVA_HOME /usr/lib/jvm/java-1.8-openjdk/jre
-ENV PATH $PATH:/usr/lib/jvm/java-1.8-openjdk/jre/bin:/usr/lib/jvm/java-1.8-openjdk/bin
-
-ENV JAVA_VERSION 8u171
-ENV JAVA_ALPINE_VERSION 8.171.11-r0
-
-RUN set -x \
-	&& apk add --no-cache \
-		openjdk8-jre="$JAVA_ALPINE_VERSION" \
-	&& [ "$JAVA_HOME" = "$(docker-java-home)" ]
