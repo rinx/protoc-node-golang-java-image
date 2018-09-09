@@ -1,10 +1,9 @@
 FROM alpine:3.7 as protoc_builder
 RUN apk add --no-cache build-base curl automake autoconf libtool git zlib-dev
 
-ENV GRPC_VERSION=1.13.0 \
-    GRPC_JAVA_VERSION=1.13.1 \
-    PROTOBUF_VERSION=3.6.0.1 \
-    PROTOBUF_C_VERSION=1.3.0 \
+ENV GRPC_VERSION=1.14.0 \
+    GRPC_JAVA_VERSION=1.14.0 \
+    PROTOBUF_VERSION=3.6.1 \
     PROTOC_GEN_DOC_VERSION=1.1.0 \
     OUTDIR=/out
 RUN mkdir -p /protobuf && \
@@ -67,4 +66,6 @@ RUN upx --lzma \
 FROM mhart/alpine-node:latest
 RUN apk add --no-cache git make musl-dev go protobuf openssh libstdc++
 COPY --from=packer /out/ /
+
+COPY semver.sh /usr/bin/
 
