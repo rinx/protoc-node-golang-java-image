@@ -1,4 +1,4 @@
-FROM alpine:3.7 as protoc_builder
+FROM alpine:latest as protoc_builder
 RUN apk add --no-cache build-base curl automake autoconf libtool git zlib-dev
 
 ENV GRPC_VERSION=1.14.0 \
